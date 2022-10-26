@@ -12,9 +12,9 @@ struct xfs_mount;
 struct xfs_qoff_logitem;
 
 struct xfs_dq_logitem {
-	struct xfs_log_item	 qli_item;	/* common portion */
+	struct xfs_log_item	qli_item;	/* common portion */
 	struct xfs_dquot	*qli_dquot;	/* dquot ptr */
-	xfs_lsn_t		 qli_flush_lsn;	/* lsn at last flush */
+	xfs_lsn_t		qli_flush_lsn;	/* lsn at last flush */
 };
 
 struct xfs_qoff_logitem {
