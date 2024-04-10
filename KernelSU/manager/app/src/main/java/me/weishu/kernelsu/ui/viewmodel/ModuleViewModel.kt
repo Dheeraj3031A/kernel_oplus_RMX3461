@@ -36,7 +36,6 @@ class ModuleViewModel : ViewModel() {
         val update: Boolean,
         val remove: Boolean,
         val updateJson: String,
-        val hasWebUi: Boolean,
     )
 
     data class ModuleUpdateInfo(
@@ -97,8 +96,7 @@ class ModuleViewModel : ViewModel() {
                             obj.getBoolean("enabled"),
                             obj.getBoolean("update"),
                             obj.getBoolean("remove"),
-                            obj.optString("updateJson"),
-                            obj.optBoolean("web")
+                            obj.optString("updateJson")
                         )
                     }.toList()
                 isNeedRefresh = false

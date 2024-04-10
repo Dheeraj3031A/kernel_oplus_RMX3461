@@ -7,7 +7,7 @@ use android_logger::Config;
 #[cfg(target_os = "android")]
 use log::LevelFilter;
 
-use crate::{apk_sign, assets, debug, defs, init_event, ksucalls, module, utils};
+use crate::{apk_sign, debug, defs, event, module, utils};
 
 /// KernelSU userspace cli
 #[derive(Parser, Debug)]
@@ -59,11 +59,11 @@ enum Commands {
         #[arg(short, long)]
         kernel: Option<PathBuf>,
 
-        /// LKM module path to replace, if not specified, will use the builtin one
-        #[arg(short, long)]
+        /// LKM module path to replace
+        #[arg(short, long, requires("init"))]
         module: Option<PathBuf>,
 
-        /// init to be replaced
+        /// init to be replaced, if use LKM, this must be specified
         #[arg(short, long, requires("module"))]
         init: Option<PathBuf>,
 
@@ -82,10 +82,6 @@ enum Commands {
         /// magiskboot path, if not specified, will use builtin one
         #[arg(long, default_value = None)]
         magiskboot: Option<PathBuf>,
-
-        /// KMI version, if specified, will use the specified KMI
-        #[arg(long, default_value = None)]
-        kmi: Option<String>,
     },
     /// For developers
     Debug {
@@ -109,27 +105,12 @@ enum Debug {
     },
 
     /// Root Shell
-    Su {
-        /// switch to gloabl mount namespace
-        #[arg(short, long, default_value = "false")]
-        global_mnt: bool,
-    },
+    Su,
 
     /// Get kernel version
     Version,
 
     Mount,
-
-    /// Copy sparse file
-    Xcp {
-        /// source file
-        src: String,
-        /// destination file
-        dst: String,
-        /// punch hole
-        #[arg(short, long, default_value = "false")]
-        punch_hole: bool,
-    },
 
     /// For testing
     Test,
@@ -184,9 +165,6 @@ enum Module {
 
     /// list all modules
     List,
-
-    /// Shrink module image size
-    Shrink,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -243,7 +221,7 @@ pub fn run() -> Result<()> {
     // the kernel executes su with argv[0] = "su" and replace it with us
     let arg0 = std::env::args().next().unwrap_or_default();
     if arg0 == "su" || arg0 == "/system/bin/su" {
-        return crate::su::root_shell();
+        return crate::ksu::root_shell();
     }
 
     let cli = Args::parse();
@@ -251,8 +229,8 @@ pub fn run() -> Result<()> {
     log::info!("command: {:?}", cli.command);
 
     let result = match cli.command {
-        Commands::PostFsData => init_event::on_post_data_fs(),
-        Commands::BootCompleted => init_event::on_boot_completed(),
+        Commands::PostFsData => event::on_post_data_fs(),
+        Commands::BootCompleted => event::on_boot_completed(),
 
         Commands::Module { command } => {
             #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -266,16 +244,15 @@ pub fn run() -> Result<()> {
                 Module::Enable { id } => module::enable_module(&id),
                 Module::Disable { id } => module::disable_module(&id),
                 Module::List => module::list_modules(),
-                Module::Shrink => module::shrink_ksu_images(),
             }
         }
-        Commands::Install => utils::install(),
+        Commands::Install => event::install(),
         Commands::Sepolicy { command } => match command {
             Sepolicy::Patch { sepolicy } => crate::sepolicy::live_patch(&sepolicy),
             Sepolicy::Apply { file } => crate::sepolicy::apply_file(file),
             Sepolicy::Check { sepolicy } => crate::sepolicy::check_rule(&sepolicy),
         },
-        Commands::Services => init_event::on_services(),
+        Commands::Services => event::on_services(),
         Commands::Profile { command } => match command {
             Profile::GetSepolicy { package } => crate::profile::get_sepolicy(package),
             Profile::SetSepolicy { package, policy } => {
@@ -295,20 +272,12 @@ pub fn run() -> Result<()> {
                 Ok(())
             }
             Debug::Version => {
-                println!("Kernel Version: {}", ksucalls::get_version());
+                println!("Kernel Version: {}", crate::ksu::get_version());
                 Ok(())
             }
-            Debug::Su { global_mnt } => crate::su::grant_root(global_mnt),
-            Debug::Mount => init_event::mount_modules_systemlessly(defs::MODULE_DIR),
-            Debug::Xcp {
-                src,
-                dst,
-                punch_hole,
-            } => {
-                utils::copy_sparse_file(src, dst, punch_hole)?;
-                Ok(())
-            }
-            Debug::Test => assets::ensure_binaries(false),
+            Debug::Su => crate::ksu::grant_root(),
+            Debug::Mount => event::mount_systemlessly(defs::MODULE_DIR),
+            Debug::Test => todo!(),
         },
 
         Commands::BootPatch {
@@ -320,8 +289,7 @@ pub fn run() -> Result<()> {
             flash,
             out,
             magiskboot,
-            kmi,
-        } => crate::boot_patch::patch(boot, kernel, module, init, ota, flash, out, magiskboot, kmi),
+        } => crate::boot_patch::patch(boot, kernel, module, init, ota, flash, out, magiskboot),
     };
 
     if let Err(e) = &result {
