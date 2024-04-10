@@ -63,6 +63,9 @@ fun FlashScreen(navigator: DestinationsNavigator, flashIt: FlashIt) {
         withContext(Dispatchers.IO) {
             flashIt(flashIt, onFinish = { showReboot ->
                 if (showReboot) {
+                    for (i in 0..2) {
+                        text += "\n"
+                    }
                     showFloatAction = true
                 }
             }, onStdout = {
@@ -137,7 +140,7 @@ fun FlashScreen(navigator: DestinationsNavigator, flashIt: FlashIt) {
 
 @Parcelize
 sealed class FlashIt : Parcelable {
-    data class FlashBoot(val bootUri: Uri? = null, val koUri: Uri, val ota: Boolean) : FlashIt()
+    data class FlashBoot(val bootUri: Uri? = null, val lkmUri: Uri? = null, val ota: Boolean) : FlashIt()
 
     data class FlashModule(val uri: Uri) : FlashIt()
 }
@@ -150,7 +153,7 @@ fun flashIt(
     when (flashIt) {
         is FlashIt.FlashBoot -> installBoot(
             flashIt.bootUri,
-            flashIt.koUri,
+            flashIt.lkmUri,
             flashIt.ota,
             onFinish,
             onStdout,

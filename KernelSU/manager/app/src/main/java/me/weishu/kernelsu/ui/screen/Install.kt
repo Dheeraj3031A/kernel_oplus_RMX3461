@@ -3,9 +3,12 @@ package me.weishu.kernelsu.ui.screen
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
+import android.webkit.DownloadListener
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -34,8 +38,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toFile
 import com.ramcosta.composedestinations.annotation.Destination
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
+import com.topjohnwu.superuser.Shell
+import com.topjohnwu.superuser.ShellUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import me.weishu.kernelsu.R
@@ -46,6 +53,7 @@ import me.weishu.kernelsu.ui.util.DownloadListener
 import me.weishu.kernelsu.ui.util.download
 import me.weishu.kernelsu.ui.util.getLKMUrl
 import me.weishu.kernelsu.ui.util.isAbDevice
+import me.weishu.kernelsu.ui.util.isInitBoot
 import me.weishu.kernelsu.ui.util.rootAvailable
 
 /**
@@ -55,62 +63,45 @@ import me.weishu.kernelsu.ui.util.rootAvailable
 @Destination
 @Composable
 fun InstallScreen(navigator: DestinationsNavigator) {
-    val scope = rememberCoroutineScope()
-    val loadingDialog = rememberLoadingDialog()
-    val context = LocalContext.current
     var installMethod by remember {
         mutableStateOf<InstallMethod?>(null)
     }
 
-    val onFileDownloaded = { uri: Uri ->
+    var lkmFileUri = null as Uri?
 
-        installMethod?.let {
-            scope.launch(Dispatchers.Main) {
-                when (it) {
-                    InstallMethod.DirectInstall -> {
-                        navigator.navigate(
-                            FlashScreenDestination(
-                                FlashIt.FlashBoot(
-                                    null,
-                                    uri,
-                                    false
-                                )
-                            )
-                        )
-                    }
-
-                    InstallMethod.DirectInstallToInactiveSlot -> {
-                        navigator.navigate(
-                            FlashScreenDestination(
-                                FlashIt.FlashBoot(
-                                    null,
-                                    uri,
-                                    true
-                                )
-                            )
-                        )
-                    }
-
-                    is InstallMethod.SelectFile -> {
-                        navigator.navigate(
-                            FlashScreenDestination(
-                                FlashIt.FlashBoot(
-                                    it.uri,
-                                    uri,
-                                    false
-                                )
-                            )
-                        )
-                    }
-                }
-            }
+    val onClickInstall = {
+        installMethod?.let { method ->
+            val flashIt = FlashIt.FlashBoot(
+                bootUri = if (method is InstallMethod.SelectFile) method.uri else null,
+                lkmUri = lkmFileUri,
+                ota = method is InstallMethod.DirectInstallToInactiveSlot
+            )
+            navigator.navigate(FlashScreenDestination(flashIt))
         }
     }
 
-    Scaffold(topBar = {
-        TopBar {
-            navigator.popBackStack()
+    val selectLkmLauncher =
+        rememberLauncherForActivityResult(contract = ActivityResultContracts.StartActivityForResult()) {
+            if (it.resultCode == Activity.RESULT_OK) {
+                it.data?.data?.let { uri ->
+                    lkmFileUri = uri
+                }
+            }
         }
+
+    val onLkmUpload = {
+        selectLkmLauncher.launch(
+            Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = "application/octet-stream"
+            }
+        )
+    }
+
+    Scaffold(topBar = {
+        TopBar(
+            onBack = { navigator.popBackStack() },
+            onLkmUpload = onLkmUpload
+        )
     }) {
         Column(modifier = Modifier.padding(it)) {
             SelectInstallMethod { method ->
@@ -122,45 +113,11 @@ fun InstallScreen(navigator: DestinationsNavigator) {
                     .fillMaxWidth()
                     .padding(16.dp)
             ) {
-
-                DownloadListener(context = context) { uri ->
-                    onFileDownloaded(uri)
-                    loadingDialog.hide()
-                }
-
-                val failedMessage = stringResource(id = R.string.failed_to_fetch_lkm_url)
-                val downloadingMessage = stringResource(id = R.string.downloading)
                 Button(
                     modifier = Modifier.fillMaxWidth(),
                     enabled = installMethod != null,
                     onClick = {
-                        loadingDialog.showLoading()
-                        scope.launch(Dispatchers.IO) {
-                            getLKMUrl().onFailure { throwable ->
-                                loadingDialog.hide()
-                                scope.launch(Dispatchers.Main) {
-                                    Toast.makeText(
-                                        context,
-                                        failedMessage.format(throwable.message),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }.onSuccess { result ->
-                                download(
-                                    context = context,
-                                    url = result.second,
-                                    fileName = result.first,
-                                    description = downloadingMessage.format(
-                                        result.first
-                                    ),
-                                    onDownloaded = { uri ->
-                                        onFileDownloaded(uri)
-                                        loadingDialog.hide()
-                                    },
-                                    onDownloading = {}
-                                )
-                            }
-                        }
+                        onClickInstall()
                     }) {
                     Text(
                         stringResource(id = R.string.install_next),
@@ -173,8 +130,11 @@ fun InstallScreen(navigator: DestinationsNavigator) {
 }
 
 sealed class InstallMethod {
-    data class SelectFile(val uri: Uri? = null, override val label: Int = R.string.select_file) :
-        InstallMethod()
+    data class SelectFile(
+        val uri: Uri? = null,
+        @StringRes override val label: Int = R.string.select_file,
+        override val summary: String?
+    ) : InstallMethod()
 
     object DirectInstall : InstallMethod() {
         override val label: Int
@@ -187,13 +147,19 @@ sealed class InstallMethod {
     }
 
     abstract val label: Int
+    open val summary: String? = null
 }
 
 @Composable
 private fun SelectInstallMethod(onSelected: (InstallMethod) -> Unit = {}) {
     val rootAvailable = rootAvailable()
     val isAbDevice = isAbDevice()
-    val radioOptions = mutableListOf<InstallMethod>(InstallMethod.SelectFile())
+    val selectFileTip = stringResource(
+        id = R.string.select_file_tip,
+        if (isInitBoot()) "init_boot" else "boot"
+    )
+    val radioOptions =
+        mutableListOf<InstallMethod>(InstallMethod.SelectFile(summary = selectFileTip))
     if (rootAvailable) {
         radioOptions.add(InstallMethod.DirectInstall)
 
@@ -208,7 +174,7 @@ private fun SelectInstallMethod(onSelected: (InstallMethod) -> Unit = {}) {
     ) {
         if (it.resultCode == Activity.RESULT_OK) {
             it.data?.data?.let { uri ->
-                val option = InstallMethod.SelectFile(uri)
+                val option = InstallMethod.SelectFile(uri, summary = selectFileTip)
                 selectedOption = option
                 onSelected(option)
             }
@@ -255,7 +221,22 @@ private fun SelectInstallMethod(onSelected: (InstallMethod) -> Unit = {}) {
                 RadioButton(selected = option.javaClass == selectedOption?.javaClass, onClick = {
                     onClick(option)
                 })
-                Text(text = stringResource(id = option.label))
+                Column {
+                    Text(
+                        text = stringResource(id = option.label),
+                        fontSize = MaterialTheme.typography.titleMedium.fontSize,
+                        fontFamily = MaterialTheme.typography.titleMedium.fontFamily,
+                        fontStyle = MaterialTheme.typography.titleMedium.fontStyle
+                    )
+                    option.summary?.let {
+                        Text(
+                            text = it,
+                            fontSize = MaterialTheme.typography.bodySmall.fontSize,
+                            fontFamily = MaterialTheme.typography.bodySmall.fontFamily,
+                            fontStyle = MaterialTheme.typography.bodySmall.fontStyle
+                        )
+                    }
+                }
             }
         }
     }
@@ -263,7 +244,7 @@ private fun SelectInstallMethod(onSelected: (InstallMethod) -> Unit = {}) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TopBar(onBack: () -> Unit = {}) {
+private fun TopBar(onBack: () -> Unit = {}, onLkmUpload: () -> Unit = {}) {
     TopAppBar(
         title = { Text(stringResource(R.string.install)) },
         navigationIcon = {
@@ -271,6 +252,11 @@ private fun TopBar(onBack: () -> Unit = {}) {
                 onClick = onBack
             ) { Icon(Icons.Filled.ArrowBack, contentDescription = null) }
         },
+        actions = {
+            IconButton(onClick = onLkmUpload) {
+                Icon(Icons.Filled.FileUpload, contentDescription = null)
+            }
+        }
     )
 }
 
